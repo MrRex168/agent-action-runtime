@@ -100,11 +100,11 @@ Run without an LLM or API key:
 python examples/crm_failure_demo.py
 ```
 
-The fake CRM reports API success but never changes the system of record. The runtime verifies the postcondition, retries once, then escalates:
+The fake CRM reports API success but never changes the system of record. The runtime verifies the postcondition and escalates immediately because this action uses `on_failure="escalate"`:
 
 ```text
 ACTION:        update_crm
-ATTEMPTS:      2
+ATTEMPTS:      1
 VERIFIED:      False
 RECOVERY:      escalate
 FINAL STATUS:  needs_review
@@ -193,7 +193,7 @@ See `examples/openai_agents_demo.py`.
 ExecutionReceipt(
     action="update_crm",
     status=ExecutionStatus.NEEDS_REVIEW,
-    attempts=2,
+    attempts=1,
     verified=False,
     recovery="escalate",
     error="VerificationError: verifier returned false",

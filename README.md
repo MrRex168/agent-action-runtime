@@ -21,25 +21,30 @@ Tool / API / Environment
 ## The 30-second example
 
 ```python
+import asyncio
+
 from action_runtime import action, execute
+
+crm = {"1842": {"status": "new"}}
 
 def actually_qualified(result: dict) -> bool:
     return crm[result["customer_id"]]["status"] == "qualified"
 
 @action(
     permission="allow",
-    retries=2,
     verify=actually_qualified,
     on_failure="escalate",
 )
 async def update_crm(customer_id: str, status: str) -> dict:
-    return await crm_api.update(customer_id, status)
+    return {"customer_id": customer_id, "requested_status": status}
 
-receipt = await execute(update_crm, "1842", "qualified")
+async def main() -> None:
+    receipt = await execute(update_crm, "1842", "qualified")
+    print(receipt.status)    # needs_review
+    print(receipt.verified)  # False
+    print(receipt.history)   # execution + verification record
 
-print(receipt.status)    # success | failed | needs_review
-print(receipt.verified)  # True | False | None
-print(receipt.history)   # every execution attempt
+asyncio.run(main())
 ```
 
 The agent decides **what** to do. The runtime controls **how the action executes** and whether success is trustworthy.
@@ -166,7 +171,7 @@ Recovery stays deliberately small:
 The core package has no OpenAI dependency.
 
 ```bash
-python -m pip install "git+https://github.com/MrRex168/agent-action-runtime.git#egg=agent-action-runtime[openai]"
+python -m pip install "agent-action-runtime[openai] @ git+https://github.com/MrRex168/agent-action-runtime.git"
 ```
 
 ```python

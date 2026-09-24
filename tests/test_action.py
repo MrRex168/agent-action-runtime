@@ -1,6 +1,4 @@
 import asyncio
-import time
-
 import pytest
 
 from action_runtime import Action, ExecutionStatus, Permission, action, execute
@@ -150,15 +148,18 @@ async def test_async_timeout_is_retried() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_timeout_returns_without_blocking_event_loop() -> None:
-    @action(timeout=0.01)
-    def slow_sync() -> None:
-        time.sleep(0.05)
+async def test_sync_timeout_is_rejected_before_execution() -> None:
+    called = False
 
-    started = time.perf_counter()
-    receipt = await execute(slow_sync)
-    elapsed = time.perf_counter() - started
+    @action(timeout=0.01)
+    def sync_action() -> None:
+        nonlocal called
+        called = True
+
+    receipt = await execute(sync_action)
 
     assert receipt.status is ExecutionStatus.FAILED
-    assert receipt.attempts == 1
-    assert elapsed < 0.04
+    assert receipt.attempts == 0
+    assert called is False
+    assert receipt.error is not None
+    assert "async action" in receipt.error

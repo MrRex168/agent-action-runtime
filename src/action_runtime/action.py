@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Awaitable, Callable, Generic, ParamSpec, TypeVar
 
 P = ParamSpec("P")
 R = TypeVar("R")
 
 
+class Permission(str, Enum):
+    ALLOW = "allow"
+    DENY = "deny"
+    ASK = "ask"
+
+
 @dataclass(frozen=True, slots=True)
 class ActionConfig:
     name: str
+    permission: Permission = Permission.ALLOW
     timeout: float | None = None
     retries: int = 0
 
@@ -36,12 +44,16 @@ class Action(Generic[P, R]):
 def action(
     *,
     name: str | None = None,
+    permission: Permission | str = Permission.ALLOW,
     timeout: float | None = None,
     retries: int = 0,
 ) -> Callable[[Callable[P, R]], Action[P, R]]:
+    resolved_permission = Permission(permission)
+
     def decorator(func: Callable[P, R]) -> Action[P, R]:
         config = ActionConfig(
             name=name or func.__name__,
+            permission=resolved_permission,
             timeout=timeout,
             retries=retries,
         )

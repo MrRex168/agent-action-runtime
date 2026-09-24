@@ -1,4 +1,4 @@
-from .action import Action, ActionConfig, action
+from .action import Action, ActionConfig, Permission, action
 from .executor import execute
 from .models import ExecutionReceipt, ExecutionStatus
 
@@ -7,6 +7,7 @@ __all__ = [
     "ActionConfig",
     "ExecutionReceipt",
     "ExecutionStatus",
+    "Permission",
     "action",
     "execute",
 ]

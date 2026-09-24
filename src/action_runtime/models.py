@@ -13,6 +13,18 @@ class ExecutionStatus(str, Enum):
     NEEDS_REVIEW = "needs_review"
 
 
+class ApprovalDecision(str, Enum):
+    APPROVE = "approve"
+    DENY = "deny"
+
+
+@dataclass(frozen=True, slots=True)
+class Approval:
+    decision: ApprovalDecision
+    by: str | None = None
+    reason: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Attempt:
     number: int
@@ -30,5 +42,6 @@ class ExecutionReceipt:
     result: Any = None
     verified: bool | None = None
     recovery: str | None = None
+    approval: Approval | None = None
     error: str | None = None
     history: tuple[Attempt, ...] = ()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from .action import Action, Permission
 from .models import ExecutionReceipt, ExecutionStatus
@@ -16,12 +16,15 @@ async def _invoke(action: Action[..., Any], *args: Any, **kwargs: Any) -> Any:
             return await awaitable
         return await asyncio.wait_for(awaitable, timeout=action.config.timeout)
 
-    loop = asyncio.get_running_loop()
-    call: Callable[[], Any] = lambda: action(*args, **kwargs)
-    future = loop.run_in_executor(None, call)
-    if action.config.timeout is None:
-        return await future
-    return await asyncio.wait_for(future, timeout=action.config.timeout)
+    # A Python worker thread cannot be safely terminated after a timeout.
+    # Refuse the configuration rather than report failure while a side-effecting
+    # action may still be running in the background.
+    if action.config.timeout is not None:
+        raise RuntimeError(
+            "timeouts require an async action; sync actions cannot be safely interrupted"
+        )
+
+    return action(*args, **kwargs)
 
 
 async def execute(action: Action[..., Any], *args: Any, **kwargs: Any) -> ExecutionReceipt:
@@ -43,6 +46,18 @@ async def execute(action: Action[..., Any], *args: Any, **kwargs: Any) -> Execut
             attempts=0,
             duration_ms=(time.perf_counter() - started) * 1000,
             error="Action requires approval",
+        )
+
+    if action.config.timeout is not None and not inspect.iscoroutinefunction(action.func):
+        return ExecutionReceipt(
+            action=action.name,
+            status=ExecutionStatus.FAILED,
+            attempts=0,
+            duration_ms=(time.perf_counter() - started) * 1000,
+            error=(
+                "RuntimeError: timeouts require an async action; "
+                "sync actions cannot be safely interrupted"
+            ),
         )
 
     max_attempts = action.config.retries + 1

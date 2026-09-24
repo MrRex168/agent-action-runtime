@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, Generic, ParamSpec, TypeVar
 
 P = ParamSpec("P")
 R = TypeVar("R")
+Verifier = Callable[[Any], bool | Awaitable[bool]]
 
 
 class Permission(str, Enum):
@@ -14,12 +15,20 @@ class Permission(str, Enum):
     ASK = "ask"
 
 
+class Recovery(str, Enum):
+    RETRY = "retry"
+    FAIL = "fail"
+    ESCALATE = "escalate"
+
+
 @dataclass(frozen=True, slots=True)
 class ActionConfig:
     name: str
     permission: Permission = Permission.ALLOW
     timeout: float | None = None
     retries: int = 0
+    verify: Verifier | None = None
+    on_failure: Recovery = Recovery.RETRY
 
     def __post_init__(self) -> None:
         if self.timeout is not None and self.timeout <= 0:
@@ -47,8 +56,11 @@ def action(
     permission: Permission | str = Permission.ALLOW,
     timeout: float | None = None,
     retries: int = 0,
+    verify: Verifier | None = None,
+    on_failure: Recovery | str = Recovery.RETRY,
 ) -> Callable[[Callable[P, R]], Action[P, R]]:
     resolved_permission = Permission(permission)
+    resolved_recovery = Recovery(on_failure)
 
     def decorator(func: Callable[P, R]) -> Action[P, R]:
         config = ActionConfig(
@@ -56,6 +68,8 @@ def action(
             permission=resolved_permission,
             timeout=timeout,
             retries=retries,
+            verify=verify,
+            on_failure=resolved_recovery,
         )
         return Action(func=func, config=config)
 

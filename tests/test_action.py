@@ -163,3 +163,105 @@ async def test_sync_timeout_is_rejected_before_execution() -> None:
     assert called is False
     assert receipt.error is not None
     assert "async action" in receipt.error
+
+
+@pytest.mark.asyncio
+async def test_verifier_marks_success_as_verified() -> None:
+    @action(verify=lambda result: result["status"] == "qualified")
+    def update_crm() -> dict:
+        return {"status": "qualified"}
+
+    receipt = await execute(update_crm)
+
+    assert receipt.status is ExecutionStatus.SUCCESS
+    assert receipt.verified is True
+    assert receipt.history[0].verified is True
+
+
+@pytest.mark.asyncio
+async def test_failed_verification_retries_then_succeeds() -> None:
+    calls = 0
+
+    @action(retries=1, verify=lambda result: result["ok"])
+    def flaky_result() -> dict:
+        nonlocal calls
+        calls += 1
+        return {"ok": calls == 2}
+
+    receipt = await execute(flaky_result)
+
+    assert receipt.status is ExecutionStatus.SUCCESS
+    assert receipt.attempts == 2
+    assert receipt.verified is True
+    assert receipt.history[0].verified is False
+    assert receipt.history[1].verified is True
+
+
+@pytest.mark.asyncio
+async def test_fail_recovery_does_not_retry() -> None:
+    calls = 0
+
+    @action(retries=5, on_failure="fail")
+    def broken() -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("permanent")
+
+    receipt = await execute(broken)
+
+    assert receipt.status is ExecutionStatus.FAILED
+    assert receipt.attempts == 1
+    assert receipt.recovery == "fail"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_escalation_returns_needs_review() -> None:
+    @action(
+        retries=3,
+        verify=lambda result: result["message_id"] is not None,
+        on_failure="escalate",
+    )
+    def send_email() -> dict:
+        return {"message_id": None}
+
+    receipt = await execute(send_email)
+
+    assert receipt.status is ExecutionStatus.NEEDS_REVIEW
+    assert receipt.attempts == 1
+    assert receipt.verified is False
+    assert receipt.recovery == "escalate"
+    assert receipt.result == {"message_id": None}
+
+
+@pytest.mark.asyncio
+async def test_async_verifier_is_supported() -> None:
+    async def verify_result(result: dict) -> bool:
+        await asyncio.sleep(0)
+        return result["ok"]
+
+    @action(verify=verify_result)
+    async def remote_action() -> dict:
+        return {"ok": True}
+
+    receipt = await execute(remote_action)
+
+    assert receipt.status is ExecutionStatus.SUCCESS
+    assert receipt.verified is True
+
+
+@pytest.mark.asyncio
+async def test_verifier_exception_is_recorded() -> None:
+    def broken_verifier(result: object) -> bool:
+        raise ValueError("bad verifier")
+
+    @action(verify=broken_verifier, on_failure="fail")
+    def tool() -> str:
+        return "response"
+
+    receipt = await execute(tool)
+
+    assert receipt.status is ExecutionStatus.FAILED
+    assert receipt.verified is False
+    assert receipt.error == "VerificationError: ValueError: bad verifier"
+    assert receipt.history[0].error == receipt.error

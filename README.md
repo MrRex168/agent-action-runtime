@@ -39,6 +39,7 @@ Tools / Environment
 - Per-attempt execution history and richer structured receipts
 - Configuration validation
 - Tests for the core execution contract
+- Optional OpenAI Agents SDK adapter; core remains provider-independent
 
 > **Safety note:** hard timeouts are currently supported for async actions only. Python cannot safely terminate a running worker thread, so a sync action configured with a timeout is rejected before execution rather than risking duplicate or uncontrolled side effects.
 
@@ -123,6 +124,54 @@ receipt = await execute(
 A denial is terminal and the tool is never called. An approval cannot override a `deny` policy. Approval metadata is preserved in the final receipt for auditability.
 
 **V1 resume model:** the caller invokes `execute(...)` again with the same action inputs plus the approval decision. Agent Action Runtime is intentionally stateless, so it does not persist pending actions or arguments between processes.
+
+## Demo: the API said success. The action did not succeed.
+
+Run the deterministic demo with no API key or LLM:
+
+```bash
+python examples/crm_failure_demo.py
+```
+
+The simulated CRM returns an API-level success without changing the system of record. Agent Action Runtime verifies the real postcondition and refuses to report success:
+
+```text
+ACTION:        update_crm
+ATTEMPTS:      1
+VERIFIED:      False
+RECOVERY:      escalate
+FINAL STATUS:  needs_review
+```
+
+This is the execution gap the project is designed to own: **a successful tool call is not necessarily a successful action.**
+
+## OpenAI Agents SDK
+
+The core package does not depend on OpenAI. Install the optional adapter only when needed:
+
+```bash
+python -m pip install -e ".[openai]"
+```
+
+```python
+from action_runtime import action
+from action_runtime.adapters.openai_agents import as_openai_tool
+
+@action(retries=2, verify=verify_result, on_failure="escalate")
+def update_crm(customer_id: str, status: str) -> dict:
+    ...
+
+tool = as_openai_tool(
+    update_crm,
+    description="Update a customer's CRM status.",
+)
+```
+
+The adapter exposes the action as an OpenAI Agents SDK function tool while execution still flows through Agent Action Runtime. The agent receives the structured runtime receipt rather than bypassing policy, retry, verification, and recovery behavior.
+
+For `permission="ask"`, use Agent Action Runtime's explicit approval flow rather than exposing the action for automatic model invocation.
+
+See `examples/openai_agents_demo.py` for an end-to-end agent example.
 
 ## What this is not
 

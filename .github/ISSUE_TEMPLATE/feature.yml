@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a focused improvement to the action execution boundary.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What execution-boundary problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior or API.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example
+      description: Show the action/tool scenario where this matters.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This belongs to policy, approval, execution, retry, verification, recovery, receipts, or an adapter.
+          required: true

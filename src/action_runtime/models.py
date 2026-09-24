@@ -8,6 +8,8 @@ from typing import Any
 class ExecutionStatus(str, Enum):
     SUCCESS = "success"
     FAILED = "failed"
+    DENIED = "denied"
+    APPROVAL_REQUIRED = "approval_required"
 
 
 @dataclass(frozen=True, slots=True)

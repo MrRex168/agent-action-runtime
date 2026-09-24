@@ -24,18 +24,19 @@ Action Runtime
 Tools / Environment
 ```
 
-## Milestone 1
-
-The current foundation includes:
+## Current capabilities
 
 - A typed `@action(...)` contract
+- `allow`, `deny`, and `ask` execution policies
+- Retry budgets with explicit attempt counts
+- Enforced timeouts for async actions
+- Safe rejection of sync timeout configurations
 - Native sync and async Python actions
-- A minimal executor
 - Structured execution receipts
 - Configuration validation
-- Tests for the core contract
+- Tests for the core execution contract
 
-Timeout and retry settings are represented in the action contract but are intentionally not enforced yet. Runtime enforcement arrives in Milestone 2.
+> **Safety note:** hard timeouts are currently supported for async actions only. Python cannot safely terminate a running worker thread, so a sync action configured with a timeout is rejected before execution rather than risking duplicate or uncontrolled side effects.
 
 ## Quick start
 
@@ -53,7 +54,7 @@ import asyncio
 from action_runtime import action, execute
 
 
-@action(timeout=10, retries=2)
+@action(permission="allow", retries=2)
 def update_crm(customer_id: str, status: str) -> dict:
     return {"customer_id": customer_id, "status": status}
 
@@ -67,6 +68,20 @@ asyncio.run(main())
 ```
 
 The executor returns an `ExecutionReceipt` containing the action name, status, attempts, duration, result, and any error.
+
+Policies are declared directly on an action:
+
+```python
+@action(permission="deny")
+def delete_customer(customer_id: str) -> None:
+    ...
+
+@action(permission="ask")
+async def send_email(to: str, body: str) -> None:
+    ...
+```
+
+A denied action never executes. An `ask` action returns `approval_required` without executing; the human approval mechanism itself is intentionally reserved for a later milestone.
 
 ## What this is not
 

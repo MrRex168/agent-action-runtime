@@ -45,9 +45,17 @@ Tools / Environment
 
 ## Quick start
 
-Install the project in development mode:
+Until the first PyPI publish, install directly from GitHub:
 
 ```bash
+python -m pip install "git+https://github.com/MrRex168/agent-action-runtime.git"
+```
+
+For local development:
+
+```bash
+git clone https://github.com/MrRex168/agent-action-runtime.git
+cd agent-action-runtime
 python -m pip install -e ".[dev]"
 ```
 
@@ -196,9 +204,17 @@ The project will add these capabilities incrementally rather than bundling a lar
 ```bash
 python -m pip install -e ".[dev]"
 pytest
+python -m build
+python -m twine check dist/*
 ```
 
+CI runs the test suite on Python 3.10, 3.11, and 3.12, builds both source and wheel distributions, validates package metadata, and smoke-tests the built wheel.
+
+Tagged releases matching `v*` create a GitHub Release with the built distributions attached. PyPI publishing is intentionally not enabled yet; it should be added only after the first release is reviewed.
+
 Requires Python 3.10+.
+
+See `CONTRIBUTING.md` for contribution guidance and `SECURITY.md` for vulnerability reporting.
 
 ## License
 

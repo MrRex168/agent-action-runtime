@@ -1,10 +1,18 @@
 from .action import Action, ActionConfig, Permission, Recovery, action
 from .executor import execute
-from .models import Attempt, ExecutionReceipt, ExecutionStatus
+from .models import (
+    Approval,
+    ApprovalDecision,
+    Attempt,
+    ExecutionReceipt,
+    ExecutionStatus,
+)
 
 __all__ = [
     "Action",
     "ActionConfig",
+    "Approval",
+    "ApprovalDecision",
     "Attempt",
     "ExecutionReceipt",
     "ExecutionStatus",

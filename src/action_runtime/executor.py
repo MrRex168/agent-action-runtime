@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from .action import Action, Permission, Recovery
-from .models import Attempt, ExecutionReceipt, ExecutionStatus
+from .models import Approval, ApprovalDecision, Attempt, ExecutionReceipt, ExecutionStatus
 
 
 async def _invoke(action: Action[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -20,7 +20,6 @@ async def _invoke(action: Action[..., Any], *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError(
             "timeouts require an async action; sync actions cannot be safely interrupted"
         )
-
     return action(*args, **kwargs)
 
 
@@ -28,82 +27,76 @@ async def _verify(action: Action[..., Any], value: Any) -> bool:
     verifier = action.config.verify
     if verifier is None:
         return True
-
     outcome = verifier(value)
     if inspect.isawaitable(outcome):
         outcome = await outcome
     return bool(outcome)
 
 
-def _terminal_failure(
-    action: Action[..., Any],
-    *,
-    started: float,
-    attempts: int,
-    history: list[Attempt],
-    error: str,
-    result: Any = None,
-    verified: bool | None = None,
-) -> ExecutionReceipt:
+def _terminal_failure(action: Action[..., Any], *, started: float, attempts: int,
+                      history: list[Attempt], error: str, approval: Approval | None,
+                      result: Any = None, verified: bool | None = None) -> ExecutionReceipt:
     recovery = action.config.on_failure
-    status = (
-        ExecutionStatus.NEEDS_REVIEW
-        if recovery is Recovery.ESCALATE
-        else ExecutionStatus.FAILED
-    )
+    status = ExecutionStatus.NEEDS_REVIEW if recovery is Recovery.ESCALATE else ExecutionStatus.FAILED
     return ExecutionReceipt(
-        action=action.name,
-        status=status,
-        attempts=attempts,
+        action=action.name, status=status, attempts=attempts,
         duration_ms=(time.perf_counter() - started) * 1000,
-        result=result,
-        verified=verified,
-        recovery=recovery.value,
-        error=error,
-        history=tuple(history),
+        result=result, verified=verified, recovery=recovery.value,
+        approval=approval, error=error, history=tuple(history),
     )
 
 
-async def execute(action: Action[..., Any], *args: Any, **kwargs: Any) -> ExecutionReceipt:
+async def execute(
+    action: Action[..., Any],
+    *args: Any,
+    approval: Approval | ApprovalDecision | str | None = None,
+    **kwargs: Any,
+) -> ExecutionReceipt:
     started = time.perf_counter()
+    resolved_approval: Approval | None = None
+    if approval is not None:
+        resolved_approval = approval if isinstance(approval, Approval) else Approval(ApprovalDecision(approval))
 
     if action.config.permission is Permission.DENY:
         return ExecutionReceipt(
-            action=action.name,
-            status=ExecutionStatus.DENIED,
-            attempts=0,
+            action=action.name, status=ExecutionStatus.DENIED, attempts=0,
             duration_ms=(time.perf_counter() - started) * 1000,
-            error="Action denied by policy",
+            approval=resolved_approval, error="Action denied by policy",
         )
 
     if action.config.permission is Permission.ASK:
+        if resolved_approval is None:
+            return ExecutionReceipt(
+                action=action.name, status=ExecutionStatus.APPROVAL_REQUIRED, attempts=0,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                error="Action requires approval",
+            )
+        if resolved_approval.decision is ApprovalDecision.DENY:
+            return ExecutionReceipt(
+                action=action.name, status=ExecutionStatus.DENIED, attempts=0,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                approval=resolved_approval, error="Action denied by approver",
+            )
+    elif resolved_approval is not None:
         return ExecutionReceipt(
-            action=action.name,
-            status=ExecutionStatus.APPROVAL_REQUIRED,
-            attempts=0,
+            action=action.name, status=ExecutionStatus.FAILED, attempts=0,
             duration_ms=(time.perf_counter() - started) * 1000,
-            error="Action requires approval",
+            approval=resolved_approval,
+            error="Approval can only be supplied for actions with permission='ask'",
         )
 
     if action.config.timeout is not None and not inspect.iscoroutinefunction(action.func):
         return ExecutionReceipt(
-            action=action.name,
-            status=ExecutionStatus.FAILED,
-            attempts=0,
+            action=action.name, status=ExecutionStatus.FAILED, attempts=0,
             duration_ms=(time.perf_counter() - started) * 1000,
-            recovery=Recovery.FAIL.value,
-            error=(
-                "RuntimeError: timeouts require an async action; "
-                "sync actions cannot be safely interrupted"
-            ),
+            recovery=Recovery.FAIL.value, approval=resolved_approval,
+            error="RuntimeError: timeouts require an async action; sync actions cannot be safely interrupted",
         )
 
     history: list[Attempt] = []
-    max_attempts = (
-        action.config.retries + 1
-        if action.config.on_failure is Recovery.RETRY
-        else 1
-    )
+    max_attempts = action.config.retries + 1 if action.config.on_failure is Recovery.RETRY else 1
+    value: Any = None
+    error = "Execution failed"
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -119,44 +112,28 @@ async def execute(action: Action[..., Any], *args: Any, **kwargs: Any) -> Execut
                 verified = await _verify(action, value)
             except Exception as exc:
                 error = f"VerificationError: {type(exc).__name__}: {exc}"
-                history.append(
-                    Attempt(number=attempt, executed=True, verified=False, error=error)
-                )
+                history.append(Attempt(number=attempt, executed=True, verified=False, error=error))
             else:
                 if verified:
                     history.append(Attempt(number=attempt, executed=True, verified=True))
                     return ExecutionReceipt(
-                        action=action.name,
-                        status=ExecutionStatus.SUCCESS,
-                        attempts=attempt,
+                        action=action.name, status=ExecutionStatus.SUCCESS, attempts=attempt,
                         duration_ms=(time.perf_counter() - started) * 1000,
-                        result=value,
-                        verified=True if action.config.verify is not None else None,
-                        history=tuple(history),
+                        result=value, verified=True if action.config.verify is not None else None,
+                        approval=resolved_approval, history=tuple(history),
                     )
-
                 error = "VerificationError: verifier returned false"
-                history.append(
-                    Attempt(number=attempt, executed=True, verified=False, error=error)
-                )
+                history.append(Attempt(number=attempt, executed=True, verified=False, error=error))
 
         if action.config.on_failure is not Recovery.RETRY:
             return _terminal_failure(
-                action,
-                started=started,
-                attempts=attempt,
-                history=history,
-                error=error,
-                result=value if "value" in locals() else None,
+                action, started=started, attempts=attempt, history=history, error=error,
+                approval=resolved_approval, result=value,
                 verified=False if error.startswith("VerificationError:") else None,
             )
 
     return _terminal_failure(
-        action,
-        started=started,
-        attempts=max_attempts,
-        history=history,
-        error=error,
-        result=value if "value" in locals() else None,
+        action, started=started, attempts=max_attempts, history=history, error=error,
+        approval=resolved_approval, result=value,
         verified=False if error.startswith("VerificationError:") else None,
     )

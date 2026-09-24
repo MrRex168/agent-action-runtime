@@ -28,6 +28,8 @@ Tools / Environment
 
 - A typed `@action(...)` contract
 - `allow`, `deny`, and `ask` execution policies
+- Explicit human approval or denial for `ask` actions
+- Approval identity/reason preserved in execution receipts
 - Retry budgets with explicit attempt counts
 - Enforced timeouts for async actions
 - Safe rejection of sync timeout configurations
@@ -100,7 +102,27 @@ async def send_email(to: str, body: str) -> None:
     ...
 ```
 
-A denied action never executes. An `ask` action returns `approval_required` without executing; the human approval mechanism itself is intentionally reserved for a later milestone.
+A denied action never executes. An `ask` action returns `approval_required` without executing until the caller supplies an explicit decision:
+
+```python
+from action_runtime import Approval, ApprovalDecision
+
+pending = await execute(send_email)
+assert pending.status == "approval_required"
+
+receipt = await execute(
+    send_email,
+    approval=Approval(
+        ApprovalDecision.APPROVE,
+        by="ops@example.com",
+        reason="Customer requested the message",
+    ),
+)
+```
+
+A denial is terminal and the tool is never called. An approval cannot override a `deny` policy. Approval metadata is preserved in the final receipt for auditability.
+
+**V1 resume model:** the caller invokes `execute(...)` again with the same action inputs plus the approval decision. Agent Action Runtime is intentionally stateless, so it does not persist pending actions or arguments between processes.
 
 ## What this is not
 

@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 
-from action_runtime import Action, ExecutionStatus, Permission, action, execute
+from action_runtime import Approval, ApprovalDecision, Action, ExecutionStatus, Permission, action, execute
 
 
 def test_action_decorator_creates_action() -> None:
@@ -265,3 +265,114 @@ async def test_verifier_exception_is_recorded() -> None:
     assert receipt.verified is False
     assert receipt.error == "VerificationError: ValueError: bad verifier"
     assert receipt.history[0].error == receipt.error
+
+
+@pytest.mark.asyncio
+async def test_ask_action_executes_after_explicit_approval() -> None:
+    calls = 0
+
+    @action(permission="ask")
+    def send_email() -> str:
+        nonlocal calls
+        calls += 1
+        return "sent"
+
+    receipt = await execute(
+        send_email,
+        approval=Approval(ApprovalDecision.APPROVE, by="reviewer@example.com"),
+    )
+
+    assert receipt.status is ExecutionStatus.SUCCESS
+    assert receipt.result == "sent"
+    assert receipt.attempts == 1
+    assert receipt.approval is not None
+    assert receipt.approval.decision is ApprovalDecision.APPROVE
+    assert receipt.approval.by == "reviewer@example.com"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ask_action_denial_is_terminal() -> None:
+    called = False
+
+    @action(permission="ask")
+    def delete_record() -> None:
+        nonlocal called
+        called = True
+
+    receipt = await execute(
+        delete_record,
+        approval=Approval(
+            ApprovalDecision.DENY,
+            by="operator",
+            reason="Customer record is protected",
+        ),
+    )
+
+    assert receipt.status is ExecutionStatus.DENIED
+    assert receipt.attempts == 0
+    assert receipt.approval is not None
+    assert receipt.approval.reason == "Customer record is protected"
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_string_approval_shorthand_is_supported() -> None:
+    @action(permission="ask")
+    async def publish() -> str:
+        return "published"
+
+    receipt = await execute(publish, approval="approve")
+
+    assert receipt.status is ExecutionStatus.SUCCESS
+    assert receipt.approval is not None
+    assert receipt.approval.decision is ApprovalDecision.APPROVE
+
+
+@pytest.mark.asyncio
+async def test_approval_cannot_bypass_deny_policy() -> None:
+    called = False
+
+    @action(permission="deny")
+    def dangerous() -> None:
+        nonlocal called
+        called = True
+
+    receipt = await execute(dangerous, approval="approve")
+
+    assert receipt.status is ExecutionStatus.DENIED
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_approval_is_rejected_for_allow_action() -> None:
+    called = False
+
+    @action(permission="allow")
+    def normal() -> None:
+        nonlocal called
+        called = True
+
+    receipt = await execute(normal, approval="approve")
+
+    assert receipt.status is ExecutionStatus.FAILED
+    assert receipt.attempts == 0
+    assert "permission='ask'" in receipt.error
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_approval_is_preserved_through_verification_failure() -> None:
+    @action(permission="ask", verify=lambda result: False, on_failure="escalate")
+    def send_email() -> dict:
+        return {"message_id": None}
+
+    receipt = await execute(
+        send_email,
+        approval=Approval(ApprovalDecision.APPROVE, by="ops"),
+    )
+
+    assert receipt.status is ExecutionStatus.NEEDS_REVIEW
+    assert receipt.approval is not None
+    assert receipt.approval.by == "ops"
+    assert receipt.verified is False

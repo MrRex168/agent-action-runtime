@@ -32,7 +32,9 @@ Tools / Environment
 - Enforced timeouts for async actions
 - Safe rejection of sync timeout configurations
 - Native sync and async Python actions
-- Structured execution receipts
+- Result verification with sync or async verifier functions
+- Explicit `retry`, `fail`, and `escalate` recovery strategies
+- Per-attempt execution history and richer structured receipts
 - Configuration validation
 - Tests for the core execution contract
 
@@ -67,7 +69,24 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-The executor returns an `ExecutionReceipt` containing the action name, status, attempts, duration, result, and any error.
+The executor returns an `ExecutionReceipt` containing the action name, status, attempts, duration, result, verification state, recovery decision, error, and per-attempt history.
+
+Verification lets the runtime distinguish **"the tool returned"** from **"the action actually succeeded"**:
+
+```python
+def verified(result: dict) -> bool:
+    return result.get("status") == "qualified"
+
+@action(
+    retries=2,
+    verify=verified,
+    on_failure="escalate",
+)
+def update_crm(customer_id: str) -> dict:
+    ...
+```
+
+Recovery is intentionally small in V1: `retry`, `fail`, or `escalate`. Escalated actions return `needs_review` so a caller can hand control to a human or higher-level system.
 
 Policies are declared directly on an action:
 

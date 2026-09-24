@@ -5,8 +5,8 @@ import inspect
 import time
 from typing import Any
 
-from .action import Action, Permission
-from .models import ExecutionReceipt, ExecutionStatus
+from .action import Action, Permission, Recovery
+from .models import Attempt, ExecutionReceipt, ExecutionStatus
 
 
 async def _invoke(action: Action[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -16,15 +16,52 @@ async def _invoke(action: Action[..., Any], *args: Any, **kwargs: Any) -> Any:
             return await awaitable
         return await asyncio.wait_for(awaitable, timeout=action.config.timeout)
 
-    # A Python worker thread cannot be safely terminated after a timeout.
-    # Refuse the configuration rather than report failure while a side-effecting
-    # action may still be running in the background.
     if action.config.timeout is not None:
         raise RuntimeError(
             "timeouts require an async action; sync actions cannot be safely interrupted"
         )
 
     return action(*args, **kwargs)
+
+
+async def _verify(action: Action[..., Any], value: Any) -> bool:
+    verifier = action.config.verify
+    if verifier is None:
+        return True
+
+    outcome = verifier(value)
+    if inspect.isawaitable(outcome):
+        outcome = await outcome
+    return bool(outcome)
+
+
+def _terminal_failure(
+    action: Action[..., Any],
+    *,
+    started: float,
+    attempts: int,
+    history: list[Attempt],
+    error: str,
+    result: Any = None,
+    verified: bool | None = None,
+) -> ExecutionReceipt:
+    recovery = action.config.on_failure
+    status = (
+        ExecutionStatus.NEEDS_REVIEW
+        if recovery is Recovery.ESCALATE
+        else ExecutionStatus.FAILED
+    )
+    return ExecutionReceipt(
+        action=action.name,
+        status=status,
+        attempts=attempts,
+        duration_ms=(time.perf_counter() - started) * 1000,
+        result=result,
+        verified=verified,
+        recovery=recovery.value,
+        error=error,
+        history=tuple(history),
+    )
 
 
 async def execute(action: Action[..., Any], *args: Any, **kwargs: Any) -> ExecutionReceipt:
@@ -54,35 +91,72 @@ async def execute(action: Action[..., Any], *args: Any, **kwargs: Any) -> Execut
             status=ExecutionStatus.FAILED,
             attempts=0,
             duration_ms=(time.perf_counter() - started) * 1000,
+            recovery=Recovery.FAIL.value,
             error=(
                 "RuntimeError: timeouts require an async action; "
                 "sync actions cannot be safely interrupted"
             ),
         )
 
-    max_attempts = action.config.retries + 1
-    last_error: str | None = None
+    history: list[Attempt] = []
+    max_attempts = (
+        action.config.retries + 1
+        if action.config.on_failure is Recovery.RETRY
+        else 1
+    )
 
     for attempt in range(1, max_attempts + 1):
         try:
             value = await _invoke(action, *args, **kwargs)
         except asyncio.TimeoutError:
-            last_error = f"TimeoutError: action exceeded {action.config.timeout}s timeout"
+            error = f"TimeoutError: action exceeded {action.config.timeout}s timeout"
+            history.append(Attempt(number=attempt, executed=True, error=error))
         except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
+            error = f"{type(exc).__name__}: {exc}"
+            history.append(Attempt(number=attempt, executed=True, error=error))
         else:
-            return ExecutionReceipt(
-                action=action.name,
-                status=ExecutionStatus.SUCCESS,
+            try:
+                verified = await _verify(action, value)
+            except Exception as exc:
+                error = f"VerificationError: {type(exc).__name__}: {exc}"
+                history.append(
+                    Attempt(number=attempt, executed=True, verified=False, error=error)
+                )
+            else:
+                if verified:
+                    history.append(Attempt(number=attempt, executed=True, verified=True))
+                    return ExecutionReceipt(
+                        action=action.name,
+                        status=ExecutionStatus.SUCCESS,
+                        attempts=attempt,
+                        duration_ms=(time.perf_counter() - started) * 1000,
+                        result=value,
+                        verified=True if action.config.verify is not None else None,
+                        history=tuple(history),
+                    )
+
+                error = "VerificationError: verifier returned false"
+                history.append(
+                    Attempt(number=attempt, executed=True, verified=False, error=error)
+                )
+
+        if action.config.on_failure is not Recovery.RETRY:
+            return _terminal_failure(
+                action,
+                started=started,
                 attempts=attempt,
-                duration_ms=(time.perf_counter() - started) * 1000,
-                result=value,
+                history=history,
+                error=error,
+                result=value if "value" in locals() else None,
+                verified=False if error.startswith("VerificationError:") else None,
             )
 
-    return ExecutionReceipt(
-        action=action.name,
-        status=ExecutionStatus.FAILED,
+    return _terminal_failure(
+        action,
+        started=started,
         attempts=max_attempts,
-        duration_ms=(time.perf_counter() - started) * 1000,
-        error=last_error,
+        history=history,
+        error=error,
+        result=value if "value" in locals() else None,
+        verified=False if error.startswith("VerificationError:") else None,
     )

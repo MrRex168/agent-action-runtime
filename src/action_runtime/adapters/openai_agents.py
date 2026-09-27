@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import asdict
 from typing import Any
@@ -51,6 +52,12 @@ def as_openai_tool(
         if key != "return"
     }
     invoke.__annotations__["return"] = str
+    # The Agents SDK builds a strict tool schema from inspect.signature().
+    # Preserve the action's explicit parameters while keeping the adapter's
+    # model-visible return value as a serialized execution receipt.
+    invoke.__signature__ = inspect.signature(action.func).replace(  # type: ignore[attr-defined]
+        return_annotation=str
+    )
 
     return function_tool(
         invoke,

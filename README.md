@@ -188,9 +188,22 @@ tool = as_openai_tool(
 )
 ```
 
-The model can choose the tool, but execution still passes through Agent Action Runtime. The agent receives the structured runtime receipt instead of bypassing policy, retry, verification, and recovery.
+**OpenAI Agents SDK decides which tool to call. Agent Action Runtime controls how the selected action executes and whether its outcome can be trusted.**
 
-See `examples/openai_agents_demo.py`.
+The adapter keeps those responsibilities separate:
+
+```text
+OpenAI Agents SDK -> agent selects action -> Agent Action Runtime
+                                            |
+                                            +-> Policy -> Execute -> Verify -> Recover -> Receipt
+                                                                          |
+                                                                          v
+                                                                    actual state
+```
+
+The agent receives the structured runtime receipt instead of bypassing policy, verification, and recovery. Agent Action Runtime is an execution-control layer underneath the selected action, not a replacement for the agent SDK or a workflow orchestrator.
+
+See `examples/openai_agents_demo.py` for the CRM scenario where the API returns `200` but the requested state never changes.
 
 ## Execution receipt
 

@@ -58,3 +58,22 @@ jobs:
         run: |
           python -m pip install --force-reinstall dist/*.whl
           python -c "import action_runtime; assert action_runtime.__version__ == '0.1.0'"
+
+
+  openai-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install with OpenAI Agents SDK
+        run: python -m pip install -e ".[dev,openai]"
+
+      - name: Validate real OpenAI tool schema
+        run: pytest -q tests/test_openai_sdk_contract.py

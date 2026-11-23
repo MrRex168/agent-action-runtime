@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Generic, ParamSpec, TypeVar
@@ -41,8 +42,8 @@ class ActionConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "permission", Permission(self.permission))
-        if self.timeout is not None and self.timeout <= 0:
-            raise ValueError("timeout must be greater than zero")
+        if self.timeout is not None and (not math.isfinite(self.timeout) or self.timeout <= 0):
+            raise ValueError("timeout must be finite and greater than zero")
         if self.retries < 0:
             raise ValueError("retries cannot be negative")
 

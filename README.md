@@ -27,12 +27,12 @@ from action_runtime import action, execute
 
 crm = {"1842": {"status": "new"}}
 
-def actually_qualified(result: dict) -> bool:
-    return crm[result["customer_id"]]["status"] == "qualified"
+def verify_status(result: dict) -> bool:
+    return crm[result["customer_id"]]["status"] == result["requested_status"]
 
 @action(
     permission="allow",
-    verify=actually_qualified,
+    verify=verify_status,
     on_failure="escalate",
 )
 async def update_crm(customer_id: str, status: str) -> dict:
@@ -40,7 +40,7 @@ async def update_crm(customer_id: str, status: str) -> dict:
 
 async def main() -> None:
     receipt = await execute(update_crm, "1842", "qualified")
-    print(receipt.status)    # needs_review
+    print(receipt.status.value)  # needs_review
     print(receipt.verified)  # False
     print(receipt.history)   # execution + verification record
 
@@ -64,7 +64,7 @@ Those concerns usually end up scattered across tool functions, callbacks, prompt
 
 ## What you get
 
-| Capability | V0.1 behavior |
+| Capability | v0.2.0 behavior |
 | --- | --- |
 | Policy | `allow`, `deny`, `ask` |
 | Human approval | Invocation-bound approval checked by a trusted application validator |
@@ -76,14 +76,14 @@ Those concerns usually end up scattered across tool functions, callbacks, prompt
 | Frameworks | Native Python + optional OpenAI Agents SDK adapter |
 | Infrastructure | Local-first, stateless, no server/database required |
 
-> **Timeout safety:** Async timeouts request cancellation locally. A remote write may already have committed. The runtime rejects a sync action configured with a timeout before invoking it.
+> **Timeout and cancellation:** A timeout applies to one async action attempt. The runtime requests cancellation and waits for cleanup, so elapsed time can exceed the timeout. Verification, reconciliation, and approval validation have their own application-managed I/O deadlines. Caller cancellation propagates without a receipt or automatic replay. A remote write may already have committed in either case. Sync callbacks run inline, and sync actions configured with a timeout are rejected before invocation.
 
 ## Install
 
-Until the first PyPI publish:
+Install v0.2.0 from its GitHub tag once published:
 
 ```bash
-python -m pip install "git+https://github.com/MrRex168/agent-action-runtime.git"
+python -m pip install "git+https://github.com/MrRex168/agent-action-runtime.git@v0.2.0"
 ```
 
 For development:
@@ -95,7 +95,7 @@ python -m pip install -e ".[dev]"
 pytest
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10 or newer. CI covers Python 3.10–3.12. See the [changelog and migration notes](CHANGELOG.md#upgrading-from-v010) when upgrading from v0.1.0.
 
 ## Killer demo: API success != action success
 
@@ -175,16 +175,17 @@ The optional `reconcile` callback receives the original action arguments after a
 The core package has no OpenAI dependency.
 
 ```bash
-python -m pip install "agent-action-runtime[openai] @ git+https://github.com/MrRex168/agent-action-runtime.git"
+python -m pip install "agent-action-runtime[openai] @ git+https://github.com/MrRex168/agent-action-runtime.git@v0.2.0"
 ```
 
 ```python
 from action_runtime import action
 from action_runtime.adapters.openai_agents import as_openai_tool
 
-@action(retries=2, verify=verify_result, on_failure="escalate")
+@action(verify=lambda result: result["persisted"], on_failure="escalate")
 def update_crm(customer_id: str, status: str) -> dict:
-    ...
+    # Stubbed response for illustration.
+    return {"persisted": False}
 
 tool = as_openai_tool(
     update_crm,
@@ -209,7 +210,7 @@ The tool returns compact JSON with `action`, `status`, `attempts`, `verified`, `
 
 **Output compatibility:** Tool consumers should migrate from the raw `error` field to `error_code`. Duration, approval records, attempt history, and raw results are omitted by default. Trusted application code can still obtain the full receipt through `execute()`.
 
-To expose selected data from a successful action, configure a trusted synchronous `result_projection` on `as_openai_tool()`, for example `result_projection=lambda result: {"count": result["count"]}`. The adapter includes its JSON-serializable output as `result` only if the full receipt fits within 4,096 UTF-8 bytes. Serialization uses ASCII escapes, and the displayed action name is limited to 128 characters. A projection that raises, produces invalid JSON data, or exceeds the size limit is omitted while the execution status is preserved.
+To expose selected data from a successful action, configure a trusted synchronous `result_projection` on `as_openai_tool()`, for example `result_projection=lambda result: {"count": result["count"]}`. The adapter includes its JSON-serializable output as `result` only if the full receipt fits within 4,096 UTF-8 bytes. Serialization uses ASCII escapes, and the displayed action name is limited to 128 characters. A projection that raises, produces invalid JSON data, or exceeds the size limit is omitted while the execution status is preserved. If the SDK cannot obtain a receipt, it returns a generic tool error. Treat that response as an unknown execution outcome.
 
 See `examples/openai_agents_demo.py` for the CRM scenario where the API returns `200` but the requested state never changes.
 
@@ -237,7 +238,7 @@ It owns one boundary:
 
 > **When an agent decides to act, how should that action execute safely and reliably?**
 
-## V0.1 scope
+## v0.2.0 scope
 
 ```text
 Action -> Policy -> Approval -> Execute -> Verify -> Recover -> Receipt
@@ -250,7 +251,7 @@ Action -> Policy -> Approval -> Execute -> Verify -> Recover -> Receipt
 ## Examples
 
 - `examples/crm_failure_demo.py` — deterministic verification failure and escalation, no API key.
-- `examples/openai_agents_demo.py` — OpenAI Agents SDK integration.
+- `examples/openai_agents_demo.py` — live OpenAI Agents SDK integration. Install the `openai` extra and set `OPENAI_API_KEY`.
 
 ## Development
 
@@ -267,7 +268,7 @@ See `CONTRIBUTING.md` for contribution guidance and `SECURITY.md` for vulnerabil
 
 ## Roadmap
 
-Near-term candidates after V0.1:
+Near-term candidates
 
 - More framework adapters
 - Durable approval handoff

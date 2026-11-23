@@ -37,11 +37,11 @@ from action_runtime.adapters.openai_agents import as_openai_tool
 crm = {"1842": {"status": "new"}}
 
 
-def verify_qualified(result: dict) -> bool:
-    return crm[result["customer_id"]]["status"] == "qualified"
+def verify_status(result: dict) -> bool:
+    return crm[result["customer_id"]]["status"] == result["requested_status"]
 
 
-@action(verify=verify_qualified, on_failure="escalate")
+@action(verify=verify_status, on_failure="escalate")
 def update_crm(customer_id: str, status: str) -> dict:
     # The API claims success, but deliberately does not mutate crm.
     return {
@@ -82,7 +82,7 @@ async def main() -> None:
         'Update customer "1842" to "qualified".',
     )
 
-    print("AGENT RECEIVES RUNTIME RECEIPT")
+    print("AGENT REPORT")
     print(result.final_output)
     print()
     print("ACTUAL STATE")

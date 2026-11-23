@@ -11,13 +11,12 @@ from action_runtime import ExecutionStatus, action, execute
 crm = {"1842": {"status": "new"}}
 
 
-def verify_qualified(result: dict) -> bool:
-    return crm[result["customer_id"]]["status"] == "qualified"
+def verify_status(result: dict) -> bool:
+    return crm[result["customer_id"]]["status"] == result["requested_status"]
 
 
 @action(
-    retries=1,
-    verify=verify_qualified,
+    verify=verify_status,
     on_failure="escalate",
 )
 def update_crm(customer_id: str, status: str) -> dict:

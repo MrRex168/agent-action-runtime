@@ -88,6 +88,9 @@ def as_openai_tool(
         receipt = await execute(action, *args, **kwargs)
         return _receipt_json(receipt, result_projection)
 
+    def safe_tool_error(_context: Any, _error: Exception) -> str:
+        return "The tool could not return an execution receipt."
+
     invoke.__name__ = action.name
     invoke.__doc__ = description
     invoke.__annotations__ = {
@@ -107,4 +110,5 @@ def as_openai_tool(
         invoke,
         name_override=action.name,
         description_override=description,
+        failure_error_function=safe_tool_error,
     )

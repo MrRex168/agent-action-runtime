@@ -205,7 +205,11 @@ OpenAI Agents SDK -> agent selects action -> Agent Action Runtime
                                                                     actual state
 ```
 
-The agent receives the structured runtime receipt instead of bypassing policy, verification, and recovery. Agent Action Runtime is an execution-control layer underneath the selected action, not a replacement for the agent SDK or a workflow orchestrator.
+The tool returns compact JSON with `action`, `status`, `attempts`, `verified`, `recovery`, and `error_code`. The error code is `null` on success, or one of `execution_failed`, `verification_failed`, `denied`, `approval_required`, or `outcome_uncertain`. Use `status` to decide how to proceed.
+
+**Output compatibility:** Tool consumers should migrate from the raw `error` field to `error_code`. Duration, approval records, attempt history, and raw results are omitted by default. Trusted application code can still obtain the full receipt through `execute()`.
+
+To expose selected data from a successful action, configure a trusted synchronous `result_projection` on `as_openai_tool()`, for example `result_projection=lambda result: {"count": result["count"]}`. The adapter includes its JSON-serializable output as `result` only if the full receipt fits within 4,096 UTF-8 bytes. Serialization uses ASCII escapes, and the displayed action name is limited to 128 characters. A projection that raises, produces invalid JSON data, or exceeds the size limit is omitted while the execution status is preserved.
 
 See `examples/openai_agents_demo.py` for the CRM scenario where the API returns `200` but the requested state never changes.
 
@@ -223,7 +227,7 @@ ExecutionReceipt(
 )
 ```
 
-Receipts are designed to make action outcomes inspectable by the calling agent, application, logs, or future hosted control plane.
+The full receipt is available to trusted application code for diagnostics and audit logging.
 
 ## What this is not
 

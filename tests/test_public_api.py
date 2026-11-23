@@ -7,6 +7,7 @@ def test_public_api_exports_expected_symbols() -> None:
         "ActionConfig",
         "Approval",
         "ApprovalDecision",
+        "ApprovalRequest",
         "Attempt",
         "ExecutionReceipt",
         "ExecutionStatus",

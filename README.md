@@ -67,7 +67,7 @@ Those concerns usually end up scattered across tool functions, callbacks, prompt
 | Capability | V0.1 behavior |
 | --- | --- |
 | Policy | `allow`, `deny`, `ask` |
-| Human approval | Explicit approve/deny with identity + reason |
+| Human approval | Invocation-bound approval checked by a trusted application validator |
 | Retries | Bounded retries for actions explicitly declared retry-safe |
 | Timeouts | Per-attempt timeout for async action calls |
 | Verification | Sync or async postcondition verifier |
@@ -120,28 +120,29 @@ FINAL STATUS:  needs_review
 ## Permissions and human approval
 
 ```python
-from action_runtime import Approval, ApprovalDecision, action, execute
+from action_runtime import action, execute
 
-@action(permission="ask")
+@action(permission="ask", approval_validator=approval_store.validate_and_consume)
 async def send_email(to: str, body: str) -> dict:
     ...
 
-pending = await execute(send_email, "customer@example.com", "Hello")
-# pending.status == approval_required
+to, body = "customer@example.com", "Hello"
+request = send_email.approval_request(to, body)
 
-receipt = await execute(
-    send_email,
-    "customer@example.com",
-    "Hello",
-    approval=Approval(
-        ApprovalDecision.APPROVE,
-        by="ops@example.com",
-        reason="Customer requested follow-up",
-    ),
-)
+# Application code presents this exact request to an authenticated reviewer.
+# An authorized approval is issued and recorded by the application.
+approval = await approval_service.review_and_issue(request, to=to, body=body)
+
+receipt = await execute(send_email, to, body, approval=approval)
 ```
 
-A denial is terminal. Approval cannot override `permission="deny"`. V0.1 is intentionally stateless: callers re-invoke the action with the same inputs plus the explicit approval decision.
+`approval_store` and `approval_service` represent trusted application code. Issue an `Approval` with `ApprovalDecision.APPROVE`, the original `ApprovalRequest`, and a finite `expires_at` in Unix seconds. The request contains a unique invocation ID, an action-instance ID, and a digest of the bound arguments. Store an immutable record of the arguments shown to the reviewer along with the request, and preserve dictionary order when reconstructing those arguments.
+
+The runtime checks the decision, expiry, action instance, and argument digest before calling the configured sync or async validator. The validator must authenticate the full record against a trusted issuance source, enforce the reviewer's authority and expiry, and return literal `True` only after authorization. For single-use approval, the store must check and consume the record in one atomic operation so concurrent requests cannot both pass. Treat approval records as sensitive and reissue a consumed approval only through a new review. An invocation ID or digest alone carries no authorization.
+
+Approval-bound arguments accept plain JSON values with string dictionary keys and finite numbers. The runtime binds default values and equivalent positional and keyword arguments, preserves dictionary order, and supplies fresh snapshots to attempts and reconciliation. Approvals apply to the registered action instance that created the request. Recreating the action, including on process restart, requires a new request. A successful admission covers that execution and its configured safe retries.
+
+Existing `ask` callers must migrate from bare approvals and string shorthand to bound records and a configured validator. Missing approval returns `approval_required`, invalid approval returns `denied`, and explicit denial remains terminal. Only a validated approval is attached to a receipt. Direct calls to `ask` and `deny` actions raise `PermissionError`. Keep the raw callable and action registration under trusted application control.
 
 ## Verification and recovery
 

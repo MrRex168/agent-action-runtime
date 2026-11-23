@@ -1,4 +1,5 @@
 import asyncio
+import time
 import pytest
 
 from action_runtime import (
@@ -336,16 +337,22 @@ async def test_verifier_exception_is_recorded() -> None:
 async def test_ask_action_executes_after_explicit_approval() -> None:
     calls = 0
 
-    @action(permission="ask")
+    def validate(candidate: Approval) -> bool:
+        return candidate == issued
+
+    @action(permission="ask", approval_validator=validate)
     def send_email() -> str:
         nonlocal calls
         calls += 1
         return "sent"
 
-    receipt = await execute(
-        send_email,
-        approval=Approval(ApprovalDecision.APPROVE, by="reviewer@example.com"),
+    issued = Approval(
+        ApprovalDecision.APPROVE,
+        by="reviewer@example.com",
+        request=send_email.approval_request(),
+        expires_at=time.time() + 60,
     )
+    receipt = await execute(send_email, approval=issued)
 
     assert receipt.status is ExecutionStatus.SUCCESS
     assert receipt.result == "sent"
@@ -376,22 +383,21 @@ async def test_ask_action_denial_is_terminal() -> None:
 
     assert receipt.status is ExecutionStatus.DENIED
     assert receipt.attempts == 0
-    assert receipt.approval is not None
-    assert receipt.approval.reason == "Customer record is protected"
+    assert receipt.approval is None
     assert called is False
 
 
 @pytest.mark.asyncio
-async def test_string_approval_shorthand_is_supported() -> None:
+async def test_string_approval_shorthand_cannot_authorize_execution() -> None:
     @action(permission="ask")
     async def publish() -> str:
         return "published"
 
     receipt = await execute(publish, approval="approve")
 
-    assert receipt.status is ExecutionStatus.SUCCESS
-    assert receipt.approval is not None
-    assert receipt.approval.decision is ApprovalDecision.APPROVE
+    assert receipt.status is ExecutionStatus.DENIED
+    assert receipt.attempts == 0
+    assert receipt.approval is None
 
 
 @pytest.mark.asyncio
@@ -428,14 +434,21 @@ async def test_approval_is_rejected_for_allow_action() -> None:
 
 @pytest.mark.asyncio
 async def test_approval_is_preserved_through_verification_failure() -> None:
-    @action(permission="ask", verify=lambda result: False, on_failure="escalate")
+    def validate(candidate: Approval) -> bool:
+        return candidate == issued
+
+    @action(
+        permission="ask", verify=lambda result: False, on_failure="escalate",
+        approval_validator=validate,
+    )
     def send_email() -> dict:
         return {"message_id": None}
 
-    receipt = await execute(
-        send_email,
-        approval=Approval(ApprovalDecision.APPROVE, by="ops"),
+    issued = Approval(
+        ApprovalDecision.APPROVE, by="ops", request=send_email.approval_request(),
+        expires_at=time.time() + 60,
     )
+    receipt = await execute(send_email, approval=issued)
 
     assert receipt.status is ExecutionStatus.NEEDS_REVIEW
     assert receipt.approval is not None

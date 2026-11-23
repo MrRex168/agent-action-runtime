@@ -19,10 +19,19 @@ class ApprovalDecision(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovalRequest:
+    invocation_id: str
+    action_id: str
+    arguments_digest: str
+
+
+@dataclass(frozen=True, slots=True)
 class Approval:
     decision: ApprovalDecision
     by: str | None = None
     reason: str | None = None
+    request: ApprovalRequest | None = None
+    expires_at: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

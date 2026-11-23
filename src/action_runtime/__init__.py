@@ -3,6 +3,7 @@ from .executor import execute
 from .models import (
     Approval,
     ApprovalDecision,
+    ApprovalRequest,
     Attempt,
     ExecutionReceipt,
     ExecutionStatus,
@@ -13,6 +14,7 @@ __all__ = [
     "ActionConfig",
     "Approval",
     "ApprovalDecision",
+    "ApprovalRequest",
     "Attempt",
     "ExecutionReceipt",
     "ExecutionStatus",

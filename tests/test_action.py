@@ -106,7 +106,7 @@ async def test_ask_action_stops_before_execution() -> None:
 async def test_execute_retries_then_succeeds() -> None:
     calls = 0
 
-    @action(retries=1, verify=lambda result: result == "ok")
+    @action(retries=1, retry_safe=True, verify=lambda result: result == "ok")
     def flaky() -> str:
         nonlocal calls
         calls += 1
@@ -132,7 +132,7 @@ async def test_execute_retries_then_succeeds() -> None:
 async def test_execute_stops_after_retry_budget() -> None:
     calls = 0
 
-    @action(retries=2)
+    @action(retries=2, retry_safe=True)
     def always_fails() -> None:
         nonlocal calls
         calls += 1
@@ -158,7 +158,7 @@ async def test_execute_stops_after_retry_budget() -> None:
 async def test_async_timeout_is_retried() -> None:
     calls = 0
 
-    @action(timeout=0.01, retries=1)
+    @action(timeout=0.01, retries=1, retry_safe=True)
     async def slow() -> None:
         nonlocal calls
         calls += 1
@@ -208,7 +208,7 @@ async def test_verifier_marks_success_as_verified() -> None:
 async def test_failed_verification_retries_then_succeeds() -> None:
     calls = 0
 
-    @action(retries=1, verify=lambda result: result["ok"])
+    @action(retries=1, retry_safe=True, verify=lambda result: result["ok"])
     def flaky_result() -> dict:
         nonlocal calls
         calls += 1
@@ -230,7 +230,7 @@ async def test_invocation_failure_does_not_reuse_previous_verification_result() 
 
     calls = 0
 
-    @action(retries=1, verify=lambda result: False)
+    @action(retries=1, retry_safe=True, verify=lambda result: False)
     def tool() -> str:
         nonlocal calls
         calls += 1
@@ -261,7 +261,7 @@ async def test_invocation_failure_does_not_reuse_previous_verification_result() 
 async def test_fail_recovery_does_not_retry() -> None:
     calls = 0
 
-    @action(retries=5, on_failure="fail")
+    @action(retries=5, retry_safe=True, on_failure="fail")
     def broken() -> None:
         nonlocal calls
         calls += 1
@@ -315,7 +315,7 @@ async def test_verifier_exception_is_recorded() -> None:
     def broken_verifier(result: object) -> bool:
         raise ValueError("bad verifier")
 
-    @action(verify=broken_verifier, on_failure="fail")
+    @action(verify=broken_verifier, retry_safe=True, on_failure="fail")
     def tool() -> str:
         return "response"
 
@@ -441,3 +441,141 @@ async def test_approval_is_preserved_through_verification_failure() -> None:
     assert receipt.approval is not None
     assert receipt.approval.by == "ops"
     assert receipt.verified is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("on_failure", ["retry", "fail", "escalate"])
+async def test_uncertain_write_is_not_replayed_without_retry_safety(on_failure: str) -> None:
+    remote_writes = []
+
+    @action(retries=2, on_failure=on_failure)
+    def write_record(record: str, *, idempotency_key: str) -> None:
+        remote_writes.append((idempotency_key, record))
+        raise ConnectionError("response lost after commit")
+
+    receipt = await execute(write_record, "record", idempotency_key="operation-1")
+
+    assert remote_writes == [("operation-1", "record")]
+    assert receipt.status is ExecutionStatus.NEEDS_REVIEW
+    assert receipt.attempts == 1
+    assert receipt.recovery == "escalate"
+    assert receipt.result is None
+    assert receipt.verified is None
+    assert receipt.error == "ConnectionError: response lost after commit"
+    assert receipt.history == (Attempt(number=1, executed=True, error=receipt.error),)
+
+
+@pytest.mark.asyncio
+async def test_retry_reuses_application_idempotency_key() -> None:
+    remote_records = {}
+    request_keys = []
+    lookup_keys = []
+
+    def reconcile(record: str, *, idempotency_key: str) -> bool:
+        lookup_keys.append(idempotency_key)
+        return False  # The service cannot confirm success through this lookup.
+
+    @action(retries=1, retry_safe=True, reconcile=reconcile)
+    def write_record(record: str, *, idempotency_key: str) -> str:
+        request_keys.append(idempotency_key)
+        if idempotency_key not in remote_records:
+            remote_records[idempotency_key] = record
+            raise ConnectionError("response lost after commit")
+        return remote_records[idempotency_key]
+
+    receipt = await execute(write_record, "record", idempotency_key="operation-2")
+
+    assert request_keys == ["operation-2", "operation-2"]
+    assert lookup_keys == ["operation-2"]
+    assert remote_records == {"operation-2": "record"}
+    assert receipt.status is ExecutionStatus.SUCCESS
+    assert receipt.result == "record"
+    assert receipt.attempts == 2
+    assert receipt.history == (
+        Attempt(
+            number=1, executed=True, error="ConnectionError: response lost after commit",
+            reconciled=False,
+        ),
+        Attempt(number=2, executed=True),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_safe", [False, True])
+async def test_reconciliation_confirms_committed_write_before_replay(retry_safe: bool) -> None:
+    writes = []
+
+    async def reconcile(record: str, *, idempotency_key: str) -> bool:
+        await asyncio.sleep(0)
+        return (idempotency_key, record) in writes
+
+    @action(retries=2, retry_safe=retry_safe, reconcile=reconcile)
+    async def write_record(record: str, *, idempotency_key: str) -> None:
+        writes.append((idempotency_key, record))
+        raise ConnectionError("response lost after commit")
+
+    receipt = await execute(write_record, "record", idempotency_key="operation-3")
+
+    assert writes == [("operation-3", "record")]
+    assert receipt.status is ExecutionStatus.SUCCESS
+    assert receipt.verified is True
+    assert receipt.result is None
+    assert receipt.error is None
+    assert receipt.attempts == 1
+    assert receipt.history == (
+        Attempt(
+            number=1, executed=True, error="ConnectionError: response lost after commit",
+            reconciled=True,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lookup_fails", [False, True])
+async def test_unconfirmed_verification_failure_requires_review(lookup_fails: bool) -> None:
+    writes = []
+
+    def reconcile(record: str) -> bool:
+        if lookup_fails:
+            raise ConnectionError("lookup unavailable")
+        return False
+
+    @action(retries=2, verify=lambda result: False, reconcile=reconcile)
+    def write_record(record: str) -> str:
+        writes.append(record)
+        return record
+
+    receipt = await execute(write_record, "record")
+
+    assert writes == ["record"]
+    assert receipt.status is ExecutionStatus.NEEDS_REVIEW
+    assert receipt.attempts == 1
+    assert receipt.result == "record"
+    assert receipt.verified is False
+    assert receipt.error == "VerificationError: verifier returned false"
+    assert receipt.history == (
+        Attempt(
+            number=1, executed=True, verified=False, error=receipt.error,
+            reconciled=False,
+            reconciliation_error="ConnectionError: lookup unavailable" if lookup_fails else None,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_timeout_after_write_requires_review_without_replay() -> None:
+    writes = []
+
+    @action(timeout=0.01, retries=2)
+    async def write_record(record: str) -> None:
+        writes.append(record)
+        await asyncio.Event().wait()
+
+    receipt = await execute(write_record, "record")
+
+    assert writes == ["record"]
+    assert receipt.status is ExecutionStatus.NEEDS_REVIEW
+    assert receipt.attempts == 1
+    assert receipt.recovery == "escalate"
+    assert receipt.error == "TimeoutError: action exceeded 0.01s timeout"
+    assert receipt.history == (Attempt(number=1, executed=True, error=receipt.error),)

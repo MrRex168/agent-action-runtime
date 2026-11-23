@@ -31,6 +31,8 @@ class Attempt:
     executed: bool
     verified: bool | None = None
     error: str | None = None
+    reconciled: bool | None = None
+    reconciliation_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

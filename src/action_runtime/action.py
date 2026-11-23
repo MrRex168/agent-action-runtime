@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Generic, ParamSpec, TypeVar
 P = ParamSpec("P")
 R = TypeVar("R")
 Verifier = Callable[[Any], bool | Awaitable[bool]]
+Reconciler = Callable[..., bool | Awaitable[bool]]
 
 
 class Permission(str, Enum):
@@ -29,6 +30,8 @@ class ActionConfig:
     retries: int = 0
     verify: Verifier | None = None
     on_failure: Recovery = Recovery.RETRY
+    retry_safe: bool = False
+    reconcile: Reconciler | None = None
 
     def __post_init__(self) -> None:
         if self.timeout is not None and self.timeout <= 0:
@@ -58,6 +61,8 @@ def action(
     retries: int = 0,
     verify: Verifier | None = None,
     on_failure: Recovery | str = Recovery.RETRY,
+    retry_safe: bool = False,
+    reconcile: Reconciler | None = None,
 ) -> Callable[[Callable[P, R]], Action[P, R]]:
     resolved_permission = Permission(permission)
     resolved_recovery = Recovery(on_failure)
@@ -70,6 +75,8 @@ def action(
             retries=retries,
             verify=verify,
             on_failure=resolved_recovery,
+            retry_safe=retry_safe,
+            reconcile=reconcile,
         )
         return Action(func=func, config=config)
 

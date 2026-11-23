@@ -37,6 +37,8 @@ def _terminal_failure(action: Action[..., Any], *, started: float,
                       history: list[Attempt], approval: Approval | None,
                       result: Any) -> ExecutionReceipt:
     recovery = action.config.on_failure
+    if action.config.retry_safe is not True:
+        recovery = Recovery.ESCALATE
     status = ExecutionStatus.NEEDS_REVIEW if recovery is Recovery.ESCALATE else ExecutionStatus.FAILED
     final_attempt = history[-1]
     return ExecutionReceipt(
@@ -95,7 +97,9 @@ async def execute(
         )
 
     history: list[Attempt] = []
-    max_attempts = action.config.retries + 1 if action.config.on_failure is Recovery.RETRY else 1
+    max_attempts = 1
+    if action.config.retry_safe is True and action.config.on_failure is Recovery.RETRY:
+        max_attempts += action.config.retries
     for attempt in range(1, max_attempts + 1):
         value: Any = None
         verified: bool | None = None
@@ -116,12 +120,27 @@ async def execute(
                 if verified is False:
                     error = "VerificationError: verifier returned false"
 
-        history.append(Attempt(number=attempt, executed=True, verified=verified, error=error))
-        if error is None:
+        reconciled: bool | None = None
+        reconciliation_error: str | None = None
+        if error is not None and action.config.reconcile is not None:
+            try:
+                outcome = action.config.reconcile(*args, **kwargs)
+                if inspect.isawaitable(outcome):
+                    outcome = await outcome
+                reconciled = outcome is True
+            except Exception as exc:
+                reconciled = False
+                reconciliation_error = f"{type(exc).__name__}: {exc}"
+
+        history.append(Attempt(
+            number=attempt, executed=True, verified=verified, error=error,
+            reconciled=reconciled, reconciliation_error=reconciliation_error,
+        ))
+        if error is None or reconciled is True:
             return ExecutionReceipt(
                 action=action.name, status=ExecutionStatus.SUCCESS, attempts=attempt,
                 duration_ms=(time.perf_counter() - started) * 1000,
-                result=value, verified=verified,
+                result=None if reconciled else value, verified=True if reconciled else verified,
                 approval=resolved_approval, history=tuple(history),
             )
 

@@ -80,7 +80,7 @@ Those concerns usually end up scattered across tool functions, callbacks, prompt
 
 ## Install
 
-Install v0.2.0 from its GitHub tag once published:
+Install v0.2.0 from its GitHub tag:
 
 ```bash
 python -m pip install "git+https://github.com/MrRex168/agent-action-runtime.git@v0.2.0"

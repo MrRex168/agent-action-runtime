@@ -66,3 +66,33 @@ async def test_real_openai_sdk_invocation_returns_safe_receipt() -> None:
         "recovery": None,
         "error_code": None,
     }
+
+
+
+@pytest.mark.asyncio
+async def test_sdk_fallback_hides_unexpected_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("agents")
+    from agents import RunContextWrapper
+    from agents.tool_context import ToolContext
+    from openai.types.responses import ResponseFunctionToolCall
+
+    async def broken_execute(*args, **kwargs):
+        raise RuntimeError("private diagnostic")
+
+    monkeypatch.setattr("action_runtime.adapters.openai_agents.execute", broken_execute)
+
+    @action()
+    def fetch() -> None:
+        pytest.fail("Unexpected runtime failure should prevent invocation")
+
+    tool = as_openai_tool(fetch, description="Fetch customer.")
+    tool_call = ResponseFunctionToolCall(
+        type="function_call", call_id="test-call", name=tool.name, arguments="{}",
+    )
+    context = ToolContext.from_agent_context(
+        RunContextWrapper(context=None), tool_call_id=tool_call.call_id, tool_call=tool_call,
+    )
+
+    output = await tool.on_invoke_tool(context, tool_call.arguments)
+
+    assert output == "The tool could not return an execution receipt."

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-action-runtime"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Reliable execution control for AI agent actions."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,7 +32,10 @@ openai = ["openai-agents>=0.3"]
 Homepage = "https://github.com/MrRex168/agent-action-runtime"
 Repository = "https://github.com/MrRex168/agent-action-runtime"
 Issues = "https://github.com/MrRex168/agent-action-runtime/issues"
-Changelog = "https://github.com/MrRex168/agent-action-runtime/releases"
+Changelog = "https://github.com/MrRex168/agent-action-runtime/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/action_runtime/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/action_runtime"]

@@ -1,3 +1,5 @@
+from importlib.metadata import version
+
 import action_runtime
 
 
@@ -22,5 +24,5 @@ def test_public_api_exports_expected_symbols() -> None:
         assert hasattr(action_runtime, name)
 
 
-def test_package_version_matches_release() -> None:
-    assert action_runtime.__version__ == "0.1.0"
+def test_package_version_matches_distribution_metadata() -> None:
+    assert action_runtime.__version__ == version("agent-action-runtime")

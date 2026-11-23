@@ -12,12 +12,25 @@ from .action import Action, Permission, Recovery
 from .models import Approval, ApprovalDecision, ApprovalRequest, Attempt, ExecutionReceipt, ExecutionStatus
 
 
+class _ActionDeadlineExceeded(Exception):
+    pass
+
+
 async def _invoke(action: Action[..., Any], *args: Any, **kwargs: Any) -> Any:
     if inspect.iscoroutinefunction(action.func):
         awaitable = action.func(*args, **kwargs)
         if action.config.timeout is None:
             return await awaitable
-        return await asyncio.wait_for(awaitable, timeout=action.config.timeout)
+        task = asyncio.ensure_future(awaitable)
+        try:
+            done, _ = await asyncio.wait((task,), timeout=action.config.timeout)
+            if task in done:
+                return task.result()
+            raise _ActionDeadlineExceeded
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     if action.config.timeout is not None:
         raise RuntimeError(
@@ -171,7 +184,7 @@ async def execute(
             args, kwargs = json.loads(approved_call)
         try:
             value = await _invoke(action, *args, **kwargs)
-        except asyncio.TimeoutError:
+        except _ActionDeadlineExceeded:
             error = f"TimeoutError: action exceeded {action.config.timeout}s timeout"
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"

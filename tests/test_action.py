@@ -592,3 +592,60 @@ async def test_timeout_after_write_requires_review_without_replay() -> None:
     assert receipt.recovery == "escalate"
     assert receipt.error == "TimeoutError: action exceeded 0.01s timeout"
     assert receipt.history == (Attempt(number=1, executed=True, error=receipt.error),)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [None, 1.0])
+async def test_action_timeout_error_preserves_the_underlying_error(timeout) -> None:
+    @action(timeout=timeout)
+    async def write() -> None:
+        raise asyncio.TimeoutError("downstream request timed out")
+
+    receipt = await execute(write)
+
+    assert receipt.status is ExecutionStatus.NEEDS_REVIEW
+    assert receipt.error == "TimeoutError: downstream request timed out"
+    assert receipt.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_caller_cancellation_propagates_when_timed_action_completes() -> None:
+    @action(timeout=1.0, retries=1, retry_safe=True)
+    async def write() -> str:
+        invocation.cancel()
+        return "completed as cancellation arrived"
+
+    invocation = asyncio.create_task(execute(write))
+    with pytest.raises(asyncio.CancelledError):
+        await invocation
+
+
+@pytest.mark.asyncio
+async def test_runtime_deadline_remains_a_timeout_after_action_cleanup() -> None:
+    cleaned_up = False
+
+    @action(timeout=0.01, retries=1)
+    async def write() -> str:
+        nonlocal cleaned_up
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0)
+            cleaned_up = True
+        return "late result"
+
+    receipt = await execute(write)
+
+    assert cleaned_up
+    assert receipt.status is ExecutionStatus.NEEDS_REVIEW
+    assert receipt.attempts == 1
+    assert receipt.result is None
+    assert receipt.error == "TimeoutError: action exceeded 0.01s timeout"
+
+
+@pytest.mark.parametrize("timeout", [float("inf"), float("nan")])
+def test_action_rejects_nonfinite_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="timeout"):
+        @action(timeout=timeout)
+        async def write() -> None:
+            pass

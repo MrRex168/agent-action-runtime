@@ -68,15 +68,15 @@ Those concerns usually end up scattered across tool functions, callbacks, prompt
 | --- | --- |
 | Policy | `allow`, `deny`, `ask` |
 | Human approval | Explicit approve/deny with identity + reason |
-| Retries | Bounded retry budget |
-| Timeouts | Hard timeout for async actions |
+| Retries | Bounded retries for actions explicitly declared retry-safe |
+| Timeouts | Per-attempt timeout for async action calls |
 | Verification | Sync or async postcondition verifier |
 | Recovery | `retry`, `fail`, `escalate` |
 | Receipts | Result, status, attempts, verification, recovery, approval, history |
 | Frameworks | Native Python + optional OpenAI Agents SDK adapter |
 | Infrastructure | Local-first, stateless, no server/database required |
 
-> **Timeout safety:** Python cannot safely terminate a running synchronous function. A sync action configured with a hard timeout is rejected before execution instead of risking duplicate or uncontrolled side effects.
+> **Timeout safety:** Async timeouts request cancellation locally. A remote write may already have committed. The runtime rejects a sync action configured with a timeout before invoking it.
 
 ## Install
 
@@ -145,26 +145,29 @@ A denial is terminal. Approval cannot override `permission="deny"`. V0.1 is inte
 
 ## Verification and recovery
 
-A verifier checks the postcondition after the tool returns:
+A verifier checks the postcondition after the tool returns. An exception, timeout, or failed verification can leave a remote write's outcome uncertain.
+
+**Retry default:** `retries=N` sets the retry budget. To authorize replay, also set `retry_safe=True` and use `on_failure="retry"`. Declare retry safety when repeating the action is harmless or the downstream service enforces deduplication for the same logical operation. An unresolved failure without that declaration returns `needs_review` after one attempt, including under `on_failure="fail"`. For retry-safe actions, `fail` stops after one attempt and `escalate` reports `needs_review`. Exhausting an authorized retry budget reports `failed`, which describes runtime execution and does not establish that a remote write was absent.
+
+An application can pass its idempotency key as an ordinary action argument. The runtime reuses the invocation arguments across attempts. Choose a unique key for each logical operation and reuse it for that operation while the downstream service's deduplication guarantee applies. For agent tools, use trusted application state to supply the key when replay safety depends on it. The runtime does not generate keys, enforce downstream deduplication, or guarantee exactly-once delivery.
 
 ```python
-def verified(result: dict) -> bool:
-    return result.get("persisted") is True
+async def already_written(record: dict, *, idempotency_key: str) -> bool:
+    return await store.confirm_write(record, idempotency_key=idempotency_key)
 
 @action(
     retries=2,
-    verify=verified,
-    on_failure="retry",
+    retry_safe=True,  # store.write enforces deduplication by key
+    verify=lambda result: result["persisted"] is True,
+    reconcile=already_written,
 )
-async def write_record(record: dict) -> dict:
-    ...
+async def write_record(record: dict, *, idempotency_key: str) -> dict:
+    return await store.write(record, idempotency_key=idempotency_key)
+
+receipt = await execute(write_record, record, idempotency_key=operation_id)
 ```
 
-Recovery stays deliberately small:
-
-- `retry`: retry within the configured budget.
-- `fail`: stop after the first failed execution or verification.
-- `escalate`: stop and return `needs_review`.
+The optional `reconcile` callback receives the original action arguments after a failed invocation or verification, before any replay. It can be synchronous or asynchronous. Use a read-only check against an authoritative source and return `True` only when it confirms the intended operation succeeded. A false result or callback exception leaves success unconfirmed and does not authorize replay. A confirmed operation returns `success` with `verified=True` and no result payload. Attempt history retains the original error and records the reconciliation outcome and any callback error.
 
 ## OpenAI Agents SDK
 

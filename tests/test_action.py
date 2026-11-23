@@ -1,7 +1,16 @@
 import asyncio
 import pytest
 
-from action_runtime import Approval, ApprovalDecision, Action, ExecutionStatus, Permission, action, execute
+from action_runtime import (
+    Action,
+    Approval,
+    ApprovalDecision,
+    Attempt,
+    ExecutionStatus,
+    Permission,
+    action,
+    execute,
+)
 
 
 def test_action_decorator_creates_action() -> None:
@@ -44,6 +53,9 @@ async def test_execute_sync_action_returns_success_receipt() -> None:
     assert receipt.result == 5
     assert receipt.attempts == 1
     assert receipt.error is None
+    assert receipt.verified is None
+    assert receipt.recovery is None
+    assert receipt.history == (Attempt(number=1, executed=True),)
 
 
 @pytest.mark.asyncio
@@ -94,11 +106,11 @@ async def test_ask_action_stops_before_execution() -> None:
 async def test_execute_retries_then_succeeds() -> None:
     calls = 0
 
-    @action(retries=2)
+    @action(retries=1, verify=lambda result: result == "ok")
     def flaky() -> str:
         nonlocal calls
         calls += 1
-        if calls < 3:
+        if calls == 1:
             raise RuntimeError("temporary")
         return "ok"
 
@@ -106,8 +118,14 @@ async def test_execute_retries_then_succeeds() -> None:
 
     assert receipt.status is ExecutionStatus.SUCCESS
     assert receipt.result == "ok"
-    assert receipt.attempts == 3
-    assert calls == 3
+    assert receipt.attempts == calls == 2
+    assert receipt.error is None
+    assert receipt.verified is True
+    assert receipt.recovery is None
+    assert receipt.history == (
+        Attempt(number=1, executed=True, error="RuntimeError: temporary"),
+        Attempt(number=2, executed=True, verified=True),
+    )
 
 
 @pytest.mark.asyncio
@@ -118,14 +136,22 @@ async def test_execute_stops_after_retry_budget() -> None:
     def always_fails() -> None:
         nonlocal calls
         calls += 1
-        raise RuntimeError("boom")
+        raise RuntimeError(f"boom {calls}")
 
     receipt = await execute(always_fails)
 
     assert receipt.status is ExecutionStatus.FAILED
     assert receipt.attempts == 3
     assert calls == 3
-    assert receipt.error == "RuntimeError: boom"
+    assert receipt.error == "RuntimeError: boom 3"
+    assert receipt.result is None
+    assert receipt.verified is None
+    assert receipt.recovery == "retry"
+    assert receipt.history == (
+        Attempt(number=1, executed=True, error="RuntimeError: boom 1"),
+        Attempt(number=2, executed=True, error="RuntimeError: boom 2"),
+        Attempt(number=3, executed=True, error="RuntimeError: boom 3"),
+    )
 
 
 @pytest.mark.asyncio
@@ -198,6 +224,40 @@ async def test_failed_verification_retries_then_succeeds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_invocation_failure_does_not_reuse_previous_verification_result() -> None:
+    class VerificationError(Exception):
+        pass
+
+    calls = 0
+
+    @action(retries=1, verify=lambda result: False)
+    def tool() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return "unverified response"
+        raise VerificationError("raised by the action")
+
+    receipt = await execute(tool)
+
+    assert receipt.status is ExecutionStatus.FAILED
+    assert receipt.attempts == calls == 2
+    assert receipt.result is None
+    assert receipt.verified is None
+    assert receipt.error == "VerificationError: raised by the action"
+    assert receipt.recovery == "retry"
+    assert receipt.history == (
+        Attempt(
+            number=1,
+            executed=True,
+            verified=False,
+            error="VerificationError: verifier returned false",
+        ),
+        Attempt(number=2, executed=True, error=receipt.error),
+    )
+
+
+@pytest.mark.asyncio
 async def test_fail_recovery_does_not_retry() -> None:
     calls = 0
 
@@ -264,7 +324,12 @@ async def test_verifier_exception_is_recorded() -> None:
     assert receipt.status is ExecutionStatus.FAILED
     assert receipt.verified is False
     assert receipt.error == "VerificationError: ValueError: bad verifier"
-    assert receipt.history[0].error == receipt.error
+    assert receipt.result == "response"
+    assert receipt.attempts == 1
+    assert receipt.recovery == "fail"
+    assert receipt.history == (
+        Attempt(number=1, executed=True, verified=False, error=receipt.error),
+    )
 
 
 @pytest.mark.asyncio
